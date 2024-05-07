@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from tiktoken import get_encoding
 from bs4 import BeautifulSoup
 from gpt4all import Embed4All
@@ -11,21 +11,27 @@ from io import StringIO
 import numpy as np
 import requests
 import hashlib
+import sqlite3
 import json
 import uuid
 import spacy
+from spacy.tokens import Span
 import pickle
 import PyPDF2
 import os
 import re
 import csv
 
+# spacy models needed
+# ``python -m spacy download en_core_web_trf``
+
 class Resources:
     def __init__(self, resource_type: str, resource_path: str, context_template: str = None):
         self.resource_type = resource_type
         self.resource_path = resource_path
         self.context_template = context_template
-        self.data = self.load_resource()
+        if resource_type != 'sql':
+            self.data = self.load_resource()
         self.chunks = []
 
     def load_resource(self):
@@ -35,8 +41,16 @@ class Resources:
             return self.load_pdf()
         elif self.resource_type == 'web':
             return self.load_web()
+        elif self.resource_type == 'sql':
+            return self.load_sql()
         else:
             raise ValueError(f"Unsupported resource type: {self.resource_type}")
+
+    def load_sql(self):
+        if os.path.exists(self.resource_path):
+            return self.resource_path
+        else:
+            return None
 
     def load_text(self):
         with open(self.resource_path, 'r') as file:
@@ -158,7 +172,18 @@ class WebScraperTool:
         self.num_chunks = num_chunks
 
     def scrape_text(self) -> List[Dict[str, Any]]:
-        self.resource.chunk_resource(self.chunk_size)
+        # Load the HTML content from the resource
+        html_content = self.resource.load_resource()
+        # Create a BeautifulSoup object to parse the HTML
+        soup = BeautifulSoup(html_content, 'html.parser')
+        # Remove script and style tags
+        for tag in soup(['script', 'style']):
+            tag.decompose()
+        # Extract the text content from the HTML
+        text = soup.get_text(separator='\n')
+        # Split the text into chunks
+        chunks = self.split_text_into_chunks(text)
+        # Contextualize the chunks
         contextualized_chunks = [
             {
                 'text': self.resource.contextualize_chunk(chunk),
@@ -166,14 +191,36 @@ class WebScraperTool:
                 'end': chunk['end'],
                 'file': self.resource.resource_path
             }
-            for chunk in self.resource.chunks[:self.num_chunks]
+            for chunk in chunks[:self.num_chunks]
         ]
         return contextualized_chunks
+
+    def split_text_into_chunks(self, text: str) -> List[Dict[str, Any]]:
+        # Split the text into chunks based on the specified chunk size
+        chunks = []
+        start = 0
+        end = self.chunk_size
+        while start < len(text):
+            # Find the nearest line break or end of text
+            newline_pos = text.find('\n', end)
+            if newline_pos == -1:
+                end = len(text)
+            else:
+                end = newline_pos
+            chunk = {
+                'text': text[start:end].strip(),
+                'start': start,
+                'end': end
+            }
+            chunks.append(chunk)
+            start = end + 1
+            end = start + self.chunk_size
+        return chunks
 
 class NERExtractionTool:
     def __init__(self, text: str = None):
         self.text = text
-        self.nlp = spacy.load("en_core_web_sm")
+        self.nlp = spacy.load("en_core_web_trf")
 
     def extract_entities(self, text: Optional[str] = None) -> List[Dict[str, Any]]:
         if text is not None:
@@ -204,6 +251,150 @@ class SemanticAnalysisTool:
             "polarity": sentiment.polarity,
             "subjectivity": sentiment.subjectivity
         }
+
+class KnowledgeGraphTool:
+    def __init__(self, input_data: Union[str, Dict, List], input_format: str = "text"):
+        self.input_data = input_data
+        self.input_format = input_format
+        self.nlp = spacy.load("en_core_web_trf")  # Using a more advanced NER model
+
+    def parse_input(self):
+        if self.input_format == "text":
+            return self.input_data
+        elif self.input_format == "json":
+            # Parse JSON input and extract relevant text
+            pass
+        elif self.input_format == "csv":
+            # Parse CSV input and extract relevant text
+            pass
+        else:
+            raise ValueError(f"Unsupported input format: {self.input_format}")
+
+    def extract_entities(self):
+        text = self.parse_input()
+        doc = self.nlp(text)
+        entities = [{"text": ent.text, "start": ent.start_char, "end": ent.end_char, "label": ent.label_} for ent in doc.ents]
+        return entities
+
+    def extract_relationships(self, entities):
+        # Implement advanced relationship extraction techniques
+        pass
+
+    def construct_graph(self, entities, relationships, output_format: str = "mermaid"):
+        if output_format == "mermaid":
+            # Generate Mermaid syntax for the knowledge graph
+            pass
+        elif output_format == "json":
+            # Generate JSON representation of the knowledge graph
+            pass
+        else:
+            raise ValueError(f"Unsupported output format: {output_format}")
+
+    def update_graph(self, new_entities, new_relationships):
+        # Implement incremental graph update logic
+        pass
+
+class KnowledgeGraphTool:
+    def __init__(self, input_data: Union[str, Dict, List], input_format: str = "text"):
+        self.input_data = input_data
+        self.input_format = input_format
+        self.nlp = spacy.load("en_core_web_trf")  # Using a more advanced NER model
+
+    def parse_input(self):
+        if self.input_format == "text":
+            return self.input_data
+        elif self.input_format == "json":
+            # Parse JSON input and extract relevant text
+            if isinstance(self.input_data, dict):
+                return self.extract_text_from_json(self.input_data)
+            elif isinstance(self.input_data, list):
+                return "\n".join([self.extract_text_from_json(item) for item in self.input_data])
+            else:
+                raise ValueError("Invalid JSON input format")
+        elif self.input_format == "csv":
+            # Parse CSV input and extract relevant text
+            if isinstance(self.input_data, list):
+                return "\n".join([",".join(row) for row in self.input_data])
+            else:
+                raise ValueError("Invalid CSV input format")
+        else:
+            raise ValueError(f"Unsupported input format: {self.input_format}")
+
+    def extract_text_from_json(self, json_data: Dict) -> str:
+        text = ""
+        for key, value in json_data.items():
+            if isinstance(value, str):
+                text += f"{key}: {value}\n"
+            elif isinstance(value, dict):
+                text += f"{key}:\n{self.extract_text_from_json(value)}\n"
+            elif isinstance(value, list):
+                text += f"{key}:\n" + "\n".join([self.extract_text_from_json(item) for item in value if isinstance(item, dict)])
+        return text.strip()
+
+    def extract_entities(self):
+        text = self.parse_input()
+        doc = self.nlp(text)
+        entities = [{"text": ent.text, "start": ent.start_char, "end": ent.end_char, "label": ent.label_} for ent in doc.ents]
+        return entities
+
+    def extract_relationships(self, entities):
+        relationships = []
+        for ent1 in entities:
+            for ent2 in entities:
+                if ent1 != ent2:
+                    relationship = self.find_relationship(ent1, ent2)
+                    if relationship:
+                        relationships.append((ent1["text"], relationship, ent2["text"]))
+        return relationships
+
+    def find_relationship(self, ent1: Dict, ent2: Dict) -> Optional[str]:
+        # basic implementation of relationship extraction based on entity labels
+        if ent1["label"] == "PERSON" and ent2["label"] == "ORG":
+            return "works_for"
+        elif ent1["label"] == "PERSON" and ent2["label"] == "PERSON":
+            return "knows"
+        elif ent1["label"] == "ORG" and ent2["label"] == "GPE":
+            return "located_in"
+        else:
+            return None
+
+    def construct_graph(self, entities, relationships, output_format: str = "mermaid"):
+        if not entities:
+            summary = self.generate_summary()
+            if output_format == "mermaid":
+                return f"No entities found to construct a knowledge graph. Summary: {summary}"
+            elif output_format == "json":
+                return json.dumps({"summary": summary}, indent=2)
+
+        if output_format == "mermaid":
+            mermaid_syntax = "graph TD;\n"
+            for entity in entities:
+                mermaid_syntax += f'    {entity["text"].replace(" ", "_")}("{entity["text"]}");\n'
+            for rel in relationships:
+                mermaid_syntax += f'    {rel[0].replace(" ", "_")} -->|"{rel[1]}"| {rel[2].replace(" ", "_")};\n'
+            return mermaid_syntax
+        elif output_format == "json":
+            graph = {
+                "entities": entities,
+                "relationships": [
+                    {"source": rel[0], "target": rel[2], "type": rel[1]}
+                    for rel in relationships
+                ]
+            }
+            return json.dumps(graph, indent=2)
+        else:
+            raise ValueError(f"Unsupported output format: {output_format}")
+
+    def update_graph(self, new_entities, new_relationships):
+        # Implement incremental graph update logic
+        pass
+
+    def generate_summary(self):
+        text = self.parse_input()
+        doc = self.nlp(text)
+        sentences = [sent.text.capitalize() for sent in doc.sents]
+        summary = " ".join(sentences[:3])  # Use the first three sentences as the summary
+        return summary
 
 class UserFeedbackTool:
     def __init__(self, prompt: str):
@@ -315,81 +506,114 @@ class SemanticFileSearchTool:
         with open(pickle_file, 'rb') as f:
             self.file_embeddings = pickle.load(f)
 
-class Word2VecSearchTool:
-    def __init__(self, resources: List['Resources'], embedding_size: int = 100, window: int = 5, min_count: int = 1, workers: int = 4):
-        self.resources = resources
-        self.embedding_size = embedding_size
-        self.window = window
-        self.min_count = min_count
-        self.workers = workers
-        self.model = self.load_or_train_model()
-
-    def load_or_train_model(self) -> Word2Vec:
-        model_hash = self.get_model_hash()
-        pickle_file = f"word2vec_model_{model_hash}.pickle"
-        if os.path.exists(pickle_file):
-            return self.load_model(pickle_file)
-        else:
-            model = self.train_model()
-            self.save_model(model, pickle_file)
-            return model
-
-    def get_model_hash(self) -> str:
-        resource_paths = sorted([resource.resource_path for resource in self.resources])
-        return hashlib.sha256(",".join(resource_paths).encode()).hexdigest()
-
-    def train_model(self) -> Word2Vec:
-        corpus = []
-        for resource in self.resources:
-            resource.chunk_resource(chunk_size=1)  # Chunk the resource into individual sentences
-            corpus.extend([chunk['text'] for chunk in resource.chunks])
-
-        model = Word2Vec(LineSentence(corpus), vector_size=self.embedding_size, window=self.window, min_count=self.min_count, workers=self.workers)
-        return model
-
-    def save_model(self, model: Word2Vec, pickle_file: str):
-        with open(pickle_file, 'wb') as f:
-            pickle.dump(model, f)
-
-    def load_model(self, pickle_file: str) -> Word2Vec:
-        with open(pickle_file, 'rb') as f:
-            return pickle.load(f)
-
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        query_words = query.split()
-        similarities = []
-
-        for resource in self.resources:
-            resource.chunk_resource(chunk_size=1)  # Chunk the resource into individual sentences
-            for chunk in resource.chunks:
-                chunk_words = chunk['text'].split()
-                if not chunk_words:
-                    continue
-
-                chunk_embedding = sum([self.model.wv[word] for word in chunk_words if word in self.model.wv]) / len(chunk_words)
-                query_embedding = sum([self.model.wv[word] for word in query_words if word in self.model.wv]) / len(query_words)
-
-                similarity = self.cosine_similarity(chunk_embedding, query_embedding)
-                similarities.append((chunk, similarity))
-
-        sorted_similarities = sorted(similarities, key=lambda x: x[1], reverse=True)
-        top_chunks = [chunk for chunk, _ in sorted_similarities[:top_k]]
-
-        return [
-            {
-                'text': chunk['text'],
-                'start': chunk['start'],
-                'end': chunk['end'],
-                'file': resource.resource_path
-            }
-            for resource, chunk in zip([resource for resource in self.resources for _ in range(len(resource.chunks))], top_chunks)
-        ]
 
     @staticmethod
     def cosine_similarity(a, b) -> float:
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
+
+class MathFormulaParserTool:
+    def __init__(self, resource: Resources, text: str = None):
+        self.resource = resource
+        self.text = text
+        self.nlp = spacy.load("en_core_web_trf")
+
+        # Define custom entity labels for mathematical symbols and numbers
+        self.nlp.entity.add_label("MATH_SYMBOL")
+        self.nlp.entity.add_label("NUMBER")
+
+    def parse_formula(self, text: Optional[str] = None) -> str:
+        if text is not None:
+            self.text = text
+        doc = self.nlp(self.text)
+
+        # Define patterns for mathematical symbols and numbers
+        math_symbols = ["=", "+", "-", "*", "/", "^", "(", ")"]
+        number_pattern = r"\d+(\.\d+)?"
+
+        # Find mathematical symbols and numbers in the text
+        for token in doc:
+            if token.text in math_symbols:
+                token.ent_type_ = "MATH_SYMBOL"
+            elif re.match(number_pattern, token.text):
+                token.ent_type_ = "NUMBER"
+
+        # Merge adjacent mathematical symbols and numbers into single entities
+        entities = []
+        prev_ent = None
+        for ent in doc.ents:
+            if prev_ent is not None and prev_ent.end == ent.start and prev_ent.label_ == ent.label_:
+                prev_ent = Span(doc, prev_ent.start, ent.end, label=ent.label_)
+            else:
+                if prev_ent is not None:
+                    entities.append(prev_ent)
+                prev_ent = ent
+        if prev_ent is not None:
+            entities.append(prev_ent)
+
+        # Wrap mathematical entities in LaTeX markdown tags
+        formula_parts = []
+        prev_end = 0
+        for ent in entities:
+            formula_parts.append(self.text[prev_end:ent.start])
+            formula_parts.append(f"$${ent.text}$$")
+            prev_end = ent.end
+        formula_parts.append(self.text[prev_end:])
+
+        # Join the formula parts into a single string
+        parsed_formula = "".join(formula_parts)
+
+        return parsed_formula
+
+
+
+class SQLTool:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self.connection = None
+
+    def connect(self):
+        self.connection = sqlite3.connect(self.db_path)
+
+    def disconnect(self):
+        if self.connection:
+            self.connection.close()
+
+    def create_category_table(self, category):
+        if not self.connection:
+            self.connect()
+
+        create_table_query = f"CREATE TABLE IF NOT EXISTS {category} (id INTEGER PRIMARY KEY, text TEXT)"
+
+        cursor = self.connection.cursor()
+        cursor.execute(create_table_query)
+        self.connection.commit()
+        cursor.close()
+
+    def insert_item(self, category, text):
+        if not self.connection:
+            self.connect()
+
+        insert_query = f"INSERT INTO {category} (text) VALUES (?)"
+
+        cursor = self.connection.cursor()
+        cursor.execute(insert_query, (text,))
+        self.connection.commit()
+        cursor.close()
+
+    def get_items(self, category):
+        if not self.connection:
+            self.connect()
+
+        select_query = f"SELECT id, text FROM {category}"
+
+        cursor = self.connection.cursor()
+        cursor.execute(select_query)
+        rows = cursor.fetchall()
+        cursor.close()
+
+        return rows
 
 class Agent:
     def __init__(
@@ -432,58 +656,80 @@ class Agent:
 
     def execute_task(self, task: "Task", context: Optional[str] = None) -> str:
         messages = []
-
         if self.persona and self.verbose:
             messages.append({"role": "system", "content": f"{self.persona}"})
-
         system_prompt = f"You are a {self.role} with the goal: {self.goal}.\n"
         system_prompt += f"The expected output is: {task.expected_output}\n"
-
         messages.append({"role": "system", "content": system_prompt.strip()})
         messages.append({"role": "user", "content": f"Your task is to {task.instructions}."})
-
         if context:
             messages.append({"role": "assistant", "content": f"Context from {task.context_agent_role}:\n{context}"})
-
         thoughts = []
-
         if task.tool_name in self.tools:
             tool = self.tools[task.tool_name]
-
             if isinstance(tool, (TextReaderTool, WebScraperTool)):
                 text_chunks = tool.read_text() if isinstance(tool, TextReaderTool) else tool.scrape_text()
                 for chunk in text_chunks:
-                    thoughts.append(chunk['text'])
-            elif isinstance(tool, (SemanticFileSearchTool, Word2VecSearchTool)):
+                    thoughts.append(tool.resource.contextualize_chunk(chunk))
+            elif isinstance(tool, SemanticFileSearchTool):
                 query = "\n".join([c.output for c in task.context if c.output])
                 relevant_chunks = tool.search(query)
                 for chunk in relevant_chunks:
                     chunk_text = f"File: {chunk['file']}\nText: {chunk['text']}\nRelevance: {chunk['score']:.3f}"
                     thoughts.append(chunk_text)
-
             elif isinstance(tool, SemanticAnalysisTool):
-                sentiment_result = tool.analyze_sentiment()
+                sentiment_result = tool.analyze_sentiment(context)
                 thoughts.append(f"Sentiment Analysis Result: {sentiment_result}")
-
             elif isinstance(tool, NERExtractionTool):
                 entities = tool.extract_entities(context)
                 thoughts.append(f"Extracted Entities: {entities}")
+            elif isinstance(tool, KnowledgeGraphTool):
+                entities = tool.extract_entities()
+                relationships = tool.extract_relationships(entities)
+                graph = tool.construct_graph(entities, relationships)
+                thoughts.append(f"Knowledge Graph:\n{graph}")
+            if "sql_tool" in self.tools:
+                sql_tool = self.tools["sql_tool"]
+                if task.instructions.startswith("Create a category table"):
+                    category = context.split(":")[-1].strip()
+                    sql_tool.create_category_table(category)
+                    return f"Category table '{category}' created successfully."
+                elif task.instructions.startswith("Insert an item"):
+                    category, item_text = context.split(":")[-1].strip().split(",")
+                    sql_tool.insert_item(category.strip(), item_text.strip())
+                    return f"Item inserted into category '{category}' successfully."
+                elif task.instructions.startswith("Retrieve items from category"):
+                    category = context.split(":")[-1].strip()
+                    items = sql_tool.get_items(category)
+                    if items:
+                        result = f"Items in category '{category}':\n"
+                        for item in items:
+                            result += f"- ID: {item[0]}, Text: {item[1]}\n"
+                        return result
+                    else:
+                        return f"No items found in category '{category}'."
+            elif isinstance(tool, UserFeedbackTool):
+                feedback = tool.request_feedback(context)
+                thoughts.append(f"User Feedback: {feedback}")
+            elif isinstance(tool, WikipediaSearchTool):
+                search_results = tool.search_wikipedia(context)
+                for result in search_results:
+                    for chunk in result['chunks']:
+                        chunk_text = f"Title: {result['title']}\nURL: {result['url']}\n{chunk['text']}"
+                        thoughts.append(chunk_text)
         if thoughts:
             thoughts_prompt = "\n".join([thought for thought in thoughts])
             messages.append({"role": "user", "content": f"{thoughts_prompt}"})
         else:
             messages.append({"role": "user", "content": "No additional relevant information found."})
-
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
         )
         result = response.choices[0].message.content
         self.log_interaction(messages, result)
-
         if self.step_callback:
             self.step_callback(task, result)
-
         return result
 
     def log_interaction(self, prompt, response):
@@ -554,6 +800,7 @@ class Task:
 
         return result
 
+
     def prepare_prompt(self, context):
         prompt = {
             "timestamp": datetime.now().isoformat(),
@@ -564,7 +811,7 @@ class Task:
         }
         return prompt
 
-class Squad:
+class researchANDGRAPH:
     def __init__(self, agents: List['Agent'], tasks: List['Task'], verbose: bool = False, log_file: str = "squad_log.json"):
         self.id = str(uuid.uuid4())
         self.agents = agents
@@ -614,6 +861,7 @@ class Squad:
         self.save_llama_logs()
 
         return context
+
 
     def handle_tool_logic(self, task, context):
         if task.tool_name in task.agent.tools:
@@ -667,34 +915,33 @@ class Squad:
         with open(self.log_file, "w") as file:
             json.dump(self.log_data, file, indent=2)
 
+
 def mainflow():
+
+
+# TOOL_RESOURCES
 
     text_resource = Resources('text', "inputs/cyberanimism_clean.txt", "Here are your thoughts on the statement '{chunk}' from the file '{file}' (start: {start}, end: {end}): ")
     pdf_resource = Resources('pdf', "inputs/book1.pdf", "The following excerpt is from the PDF '{file}' (start: {start}, end: {end}):\n{chunk}")
-    web_resource = Resources('web', "http://matplotlib.org/stable/gallery/mplot3d/2dcollections3d.html#sphx-glr-gallery-mplot3d-2dcollections3d-py", "The following content is scraped from the web page '{file}':\n{chunk}")
-    system_docs_resource = Resources('text', "inputs/system_documentation.txt", "The following is a snippet from the system documentation '{file}' (start: {start}, end: {end}):\n{chunk}")
+    web_resource = Resources('web', "https://www.dvdtalk.com/reviews/23083/what-the-bleepdown-the-rabbit-hole-quantum-edition/", "The following content is scraped from the web page '{file}':\n{chunk}")
+    secret_poetry_resource = Resources('text', "inputs/bloodypoetry.txt", "Here is a secret poem for you:\n{chunk}")
 
-    text_reader_tool = TextReaderTool(text_resource, chunk_size=1000, num_chunks=5)
-    web_scraper_tool = WebScraperTool(web_resource, chunk_size=512, num_chunks=2)
-    sentiment_analysis_tool = SemanticAnalysisTool("")
-    ner_extraction_tool = NERExtractionTool("")
-    system_docs_tool = TextReaderTool(system_docs_resource, chunk_size=1000, num_chunks=10)
-    semantic_search_tool = SemanticFileSearchTool(resources=[pdf_resource, text_resource], embed_model='nomic-embed-text-v1.5.f16.gguf', chunk_size=500, top_k=5)
-    wikipedia_search_tool = WikipediaSearchTool(chunk_size=500, num_chunks=5)
+
+# TOOLS
+
+    text_reader_tool = TextReaderTool(text_resource, chunk_size=128, num_chunks=8)
+    web_scraper_tool = WebScraperTool(web_resource, chunk_size=512, num_chunks=8)
+    semantic_search_tool = SemanticFileSearchTool(resources=[pdf_resource, text_resource, secret_poetry_resource], embed_model='nomic-embed-text-v1.5.f16.gguf', chunk_size=256, top_k=4)
+ 
+
+# AGENTS
 
     researcher = Agent(
         role='Researcher',
         goal='Analyze the provided text and extract relevant information.',
         persona="""You are a renowned Content Strategist, known for your insightful and engaging articles. You transform complex concepts into compelling narratives.""",
         tools={"text_reader": text_reader_tool},
-        verbose=True
-    )
-
-    wikipedia_expert = Agent(
-        role='Wikipedia Expert',
-        goal='Provide contextual information from Wikipedia articles relevant to a given topic.',
-        persona='You are an expert in searching and summarizing information from Wikipedia on various topics.',
-        tools={'wikipedia_search': wikipedia_search_tool},
+        model="phi3",
         verbose=True
     )
 
@@ -702,24 +949,10 @@ def mainflow():
         role='Web Analyzer',
         goal='Analyze the scraped web content and provide a summary.',
         tools={"web_scraper": web_scraper_tool},
+        model="adrienbrault/nous-hermes2pro-llama3-8b:q4_K_M",
         verbose=True
     )
 
-    vibe_check = Agent(
-        role='Vibes Analyst',
-        persona='You tell people at parties you are an empath, but you are really just a sentiment analysis tool.',
-        goal='To empathetically value the sentiments and subjectivity of provided information.',
-        tools={"sentiment_analysis": sentiment_analysis_tool},
-        verbose=True
-    )
-
-    planner = Agent(
-        role="Planner",
-        goal="Develop actionable detailed step by step plans.",
-        persona="You are an experienced and thoughtful Systems Manager with a proven track record in developing and implementing effective systems to optimize domain efficiency.",
-        tools={"system_docs": system_docs_tool},
-        verbose=True
-    )
 
     semantic_searcher = Agent(
         role='Semantic Searcher',
@@ -736,27 +969,8 @@ def mainflow():
         verbose=True
     )
 
-    entity_extractor = Agent(
-        role='Entity Extractor',
-        goal='To understand the relationships between entities relating to current thoughts.',
-        tools={"ner_extraction": ner_extraction_tool},
-        model="llama3",
-        verbose=True
-    )
 
-    mermaid = Agent(
-        role='Mermaid Graph Generator',
-        goal='To only respond in mermaid script.',
-        model="mermaidGRAPH:latest",
-        verbose=True
-    )
-
-    wikipedia_search_task = Task(
-        instructions='Use Wikipedia to find relevant articles and summarize the key information related to the given topic.',
-        expected_output='A summary of the top Wikipedia articles related to the given topic, including article titles, URLs, and chunked content.',
-        agent=wikipedia_expert,
-        tool_name='wikipedia_search'
-    )
+# TASKS
 
     txt_task = Task(
         instructions="Analyze the provided text and identify key insights and patterns.",
@@ -774,20 +988,12 @@ def mainflow():
         output_file='web_task_output.txt',
     )
 
-    system_plan = Task(
-        instructions="Analyze the provided system documentation and develop a comprehensive plan for enhancing system performance, reliability, and efficiency.",
-        expected_output="A detailed plan outlining strategies and steps for optimizing the systems.",
-        agent=planner,
-        tool_name="system_docs",
-        output_file="system_plan.txt",
-    )
-
     search_task = Task(
         instructions='Search the provided files for information relevant to the given query.',
         expected_output='A list of relevant files with their similarity scores.',
         agent=semantic_searcher,
         tool_name='semantic_search',
-        context=[system_plan, txt_task],
+        context=[txt_task],
     )
 
     summary = Task(
@@ -798,48 +1004,16 @@ def mainflow():
         output_file='summarytask_output.txt',
     )
 
-    vibes = Task(
-        instructions="Analyze the sentiment of the extracted information.",
-        expected_output="A sentiment analysis report based on the extracted information.",
-        agent=vibe_check,
-        context=[search_task, txt_task, web_task],
-        output_file='sentimentalizer_output.txt',
-        tool_name="sentiment_analysis",
-    )
+# FLOW SEQUENCE
 
-    ner_task = Task(
-        instructions="Extract named entities from the summary report.",
-        expected_output="A list of extracted named entities.",
-        agent=entity_extractor,
-        context=[summary, search_task, txt_task, web_task],
-        output_file='ner_output.txt',
-        tool_name="ner_extraction",
-    )
-
-    finalMERMAID = Task(
-        instructions="[INST]Generate a mermaid diagram based on the summary report.[/INST]",
-        expected_output="```mermaid\ngraph TD;\n",
-        agent=mermaid,
-        context=[summary],
-        output_file='mermaid_output.mmd',
-    )
-
-    firstMERMAID = Task(
-        instructions="[INST]Generate a mermaid diagram based on the provided content.[/INST]",
-        expected_output="```mermaid\ngraph TD;\n",
-        agent=mermaid,
-        context=[txt_task, web_task, system_plan, search_task],
-        output_file='mermaid_output.mmd',
-    )
-
-    squad = Squad(
-        agents=[researcher, web_analyzer, planner, mermaid, summarizer, semantic_searcher, vibe_check, entity_extractor, mermaid],
-        tasks=[txt_task, web_task, system_plan, firstMERMAID, summary, search_task, vibes, ner_task, finalMERMAID],
+    flow = researchANDGRAPH(
+        agents=[researcher, semantic_searcher, web_analyzer, summarizer, semantic_searcher],
+        tasks=[txt_task, search_task, txt_task, web_task, summary],
         verbose=True,
         log_file="squad_goals" + datetime.now().strftime("%Y%m%d%H%M%S") + ".json"
     )
 
-    result = squad.run()
+    result = flow.run()
     print(f"Final output:\n{result}")
 
 if __name__ == "__main__":
