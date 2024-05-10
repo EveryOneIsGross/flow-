@@ -1,3 +1,24 @@
+##
+```mermaid
+graph TD
+    A[Flow Module] --> B(Task Module)
+    B --> C(Agent Module)
+    C --> D(Tool Module)
+    D --> E(Resource Module)
+    E --> D
+    D --> C
+    C --> B
+    B --> A
+    A --> F(Context)
+    F --> A
+    B --> F
+    F --> B
+    C --> F
+    F --> C
+    D --> F
+    F --> D
+```
+
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
